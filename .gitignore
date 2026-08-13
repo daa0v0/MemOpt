@@ -1,0 +1,32 @@
+# 编译产物
+*.exe
+*.o
+*.obj
+*.res
+*.dll
+*.lib
+*.a
+
+# 日志
+*.log
+
+# 运行时配置（用户本地设置）
+*.ini
+
+# 构建目录
+build/
+release/
+dist/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+*.suo
+*.user
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
