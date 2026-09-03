@@ -2432,8 +2432,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         draw_win_button(hdc, rc.right - WIN_BTN_W - 2, 2, -1,
             g_win_btn_hover == -1);
 
-        /* 5) Hero 白色背景区（视觉主体，高度增加到 140） */
-        int hero_bottom = TITLE_BAR_H + 150;
+        /* 5) Hero 白色背景区（视觉主体）
+           ★ 底部必须与第一张卡片顶部(card_y=136)精确对齐：
+           旧值为 150，白色区压住"物理内存"卡片顶部 14px，
+           视觉上白色多出一截越过卡片（用户反馈）。 */
+        int hero_bottom = TITLE_BAR_H + 136;
         RECT rcHero = { 0, TITLE_BAR_H, rc.right, hero_bottom };
         HBRUSH brHero = CreateSolidBrush(RGB(255, 255, 255));
         FillRect(hdc, &rcHero, brHero);
