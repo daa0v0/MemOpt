@@ -22,7 +22,7 @@
 *   memreduct 的 0ms 延迟是该系统上 0xF7 蓝屏的根因。
 *
 * UI 布局 (v3):
-*   主窗口: 大百分比 + 进度条 + 三张竖排内存卡片 + [立即清理] [设置]
+*   主窗口: 大百分比 + 内存信息 + 三张竖排内存卡片 + [立即清理] [设置]
 *   设置窗口 (弹窗): 复选框(自动清理/自启动/强力) + 数字输入(阈值/间隔) + 释放更多 + 保存
 *
 * 支持的区域名 (大小写不敏感):
@@ -1251,8 +1251,6 @@ static HWND g_hwnd;          /* 主窗口 */
 static HWND g_hSettingsDlg;  /* 设置弹窗 */
 
 static HWND g_hPct;          /* 大号百分比标签 */
-static HWND g_hBar;          /* 进度条（已废弃，保留声明兼容旧引用） */
-static int g_progress_pct = 0; /* 自绘进度条百分比 */
 static HWND g_hTotalMem;     /* 总内存占用卡片（SS_OWNERDRAW） */
 static HWND g_hPageMem;      /* 页面内存卡片（SS_OWNERDRAW） */
 static HWND g_hSysWS;        /* 系统工作集卡片（SS_OWNERDRAW） */
@@ -1406,32 +1404,7 @@ static int hit_win_button(HWND hwnd, int mx, int my) {
     return 0;
 }
 
-/* 自定义进度条：浅灰底色 + 蓝色填充 + 圆角 */
-static void draw_progress_bar(HDC hdc, RECT *rc, int pct, COLORREF fill_col) {
-    int bar_h = 8;
-    int bar_y = rc->top;
-    /* 底色轨道 */
-    HBRUSH brTk = CreateSolidBrush(RGB(228, 231, 235));
-    HPEN pnTk = CreatePen(PS_SOLID, 1, RGB(228, 231, 235));
-    HGDIOBJ ot = SelectObject(hdc, brTk);
-    HGDIOBJ opT = SelectObject(hdc, pnTk);
-    RoundRect(hdc, rc->left, bar_y, rc->right, bar_y + bar_h, 4, 4);
-    SelectObject(hdc, ot); SelectObject(hdc, opT);
-    DeleteObject(brTk); DeleteObject(pnTk);
-    /* 填充 */
-    if (pct > 0) {
-        int fill_w = (int)((double)(rc->right - rc->left) * pct / 100.0);
-        if (fill_w > bar_h) { /* 至少超过圆角半径 */
-            HBRUSH brF = CreateSolidBrush(fill_col);
-            HPEN pnF = CreatePen(PS_SOLID, 1, fill_col);
-            HGDIOBJ of = SelectObject(hdc, brF);
-            HGDIOBJ opF = SelectObject(hdc, pnF);
-            RoundRect(hdc, rc->left, bar_y, rc->left + fill_w, bar_y + bar_h, 4, 4);
-            SelectObject(hdc, of); SelectObject(hdc, opF);
-            DeleteObject(brF); DeleteObject(pnF);
-        }
-    }
-}
+
 
 static void init_ui_res(void) {
     static int inited = 0;
@@ -1519,18 +1492,7 @@ static BOOL CALLBACK set_child_font(HWND child, LPARAM lp) {
     return TRUE;
 }
 
-/* 根据占用百分比选择进度条颜色。
-   更克制的阈值：
-     < 75%   norm 蓝
-     75-90%  warn 橙
-     > 90%   crit 红
-   sys_ws 专用 kern 灰。 */
-static COLORREF bar_color_kind(int pct, BOOL is_kern) {
-    if (is_kern)            return RGB(71, 85, 105);  /* slate-600 */
-    if (pct >= 90)          return ALERT_RED;
-    if (pct >= 75)          return ALERT_ORANGE;
-    return UI_ACCENT;
-}
+
 
 /* 在 SS_OWNERDRAW STATIC 上绘制一张内存卡片：
    - 圆角白底（圆角 10px, 1px 描边）
@@ -1802,8 +1764,7 @@ static void gui_refresh_status(void) {
         SetWindowTextW(g_hMemInfo, info);
     }
 
-    /* 进度条（自绘，存储百分比触发重绘） */
-    g_progress_pct = pct;
+    /* 触发主窗口重绘（大百分比/卡片进度条随定时器刷新） */
     InvalidateRect(g_hwnd, NULL, FALSE);
 
     /* 状态卡片：上次清理信息。
@@ -2293,22 +2254,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         #define WIN_W 500
         #define PAD 20
 
-        /* Hero 区 — 大号百分比 + 环形进度条视觉中心
-           垂直排布（v7，间距对称）：
-           大百分比 16~76 · 信息文字 80~102 · 进度条 110~120 ·
-           hero 底 136，上下留白 14/16px */
+        /* Hero 区 — 大号百分比 + 内存信息（v8：去掉了大进度条，只剩两行）：
+           大百分比 22~82 · 信息文字 92~114 · hero 底 136，
+           上下各留白 22px 完全对称 */
         g_hPct = CreateWindowW(L"STATIC", L"--",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            PAD, 16 + Y_OFF, WIN_W - PAD * 2, 60, hwnd, NULL, NULL, NULL);
+            PAD, 22 + Y_OFF, WIN_W - PAD * 2, 60, hwnd, NULL, NULL, NULL);
 
         /* Hero 区 — "内存已使用 X.X GB / XX.X GB" 信息文字 */
         g_hMemInfo = CreateWindowW(L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            PAD, 80 + Y_OFF, WIN_W - PAD * 2, 22, hwnd, NULL, NULL, NULL);
+            PAD, 92 + Y_OFF, WIN_W - PAD * 2, 22, hwnd, NULL, NULL, NULL);
         SendMessageW(g_hMemInfo, WM_SETFONT, (WPARAM)g_font_small, TRUE);
-
-        /* 进度条改为 WM_PAINT 自绘，不再创建 PROGRESS_CLASS */
-        g_hBar = NULL;
 
         /* 三张内存卡片（竖排）—— hero 底部 136, 卡片加高到 90px, 间距 12px
            （用户反馈"条太窄"，加高后进度条也能加粗到 8px） */
@@ -2454,43 +2411,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FillRect(hdc, &rcDivider, brDiv);
         DeleteObject(brDiv);
 
-        /* 7) 自绘进度条（居中加宽，视觉更扎实） */
-        int bar_ht = 10;
-        /* v7：进度条下移 110 → 与信息文字(80~102)不再重叠（旧 106 时被
-           文字 STATIC 的白底遮盖，进度条看起来断断续续） */
-        RECT rcBar = { 40, 110 + TITLE_BAR_H, rc.right - 40, 110 + TITLE_BAR_H + bar_ht };
-        COLORREF bar_col = UI_ACCENT;
-        /* 降低焦虑感：仅在 >85% 时变橙，>92% 变红 */
-        if (g_progress_pct >= 92) bar_col = ALERT_RED;
-        else if (g_progress_pct >= 85) bar_col = ALERT_ORANGE;
-        
-        /* 自定义更现代的进度条绘制（双层圆角+阴影感）*/
-        {
-            /* 背景轨道（更浅的灰） */
-            HBRUSH brTk = CreateSolidBrush(RGB(235, 238, 244));
-            HPEN pnTk = CreatePen(PS_SOLID, 1, RGB(235, 238, 244));
-            HGDIOBJ ot = SelectObject(hdc, brTk);
-            HGDIOBJ opT = SelectObject(hdc, pnTk);
-            RoundRect(hdc, rcBar.left, rcBar.top, rcBar.right, rcBar.bottom, 5, 5);
-            SelectObject(hdc, ot); SelectObject(hdc, opT);
-            DeleteObject(brTk); DeleteObject(pnTk);
-            
-            /* 填充 */
-            if (g_progress_pct > 0) {
-                int fill_w = (int)((double)(rcBar.right - rcBar.left) * g_progress_pct / 100.0);
-                if (fill_w > bar_ht) { /* 至少超过圆角半径 */
-                    HBRUSH brF = CreateSolidBrush(bar_col);
-                    HPEN pnF = CreatePen(PS_SOLID, 1, bar_col);
-                    HGDIOBJ of = SelectObject(hdc, brF);
-                    HGDIOBJ opF = SelectObject(hdc, pnF);
-                    RoundRect(hdc, rcBar.left, rcBar.top, rcBar.left + fill_w, rcBar.bottom, 5, 5);
-                    SelectObject(hdc, of); SelectObject(hdc, opF);
-                    DeleteObject(brF); DeleteObject(pnF);
-                }
-            }
-        }
-
-        /* 8) 1px 边框（弱化：RGB(228, 230, 234)） */
+        /* 7) 1px 边框（弱化：RGB(228, 230, 234)） */
         HPEN pnBorder = CreatePen(PS_SOLID, 1, RGB(226, 228, 234));
         HGDIOBJ opB = SelectObject(hdc, pnBorder);
         HGDIOBJ obB = SelectObject(hdc, GetStockObject(NULL_BRUSH));
