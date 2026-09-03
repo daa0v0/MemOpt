@@ -280,6 +280,22 @@ static void log_init(void) {
     } else {
         wcscpy_s(g_log_path, MAX_PATH, L"memopt.log");
     }
+
+    /* 日志轮转：超过 512KB 时把旧日志归档为 memopt.log.old 并重新开始，
+       防止长时间运行日志无限膨胀（自动清理每 10 分钟一次，每次 4~6 行）。 */
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (GetFileAttributesExW(g_log_path, GetFileExInfoStandard, &fad)
+            && fad.nFileSizeHigh == 0
+            && fad.nFileSizeLow > 512 * 1024) {
+            wchar_t old_path[MAX_PATH];
+            wcscpy_s(old_path, _countof(old_path), g_log_path);
+            wchar_t *dot = wcsstr(old_path, L".log");
+            if (dot) wcscpy_s(dot, _countof(old_path) - (size_t)(dot - old_path), L".log.old");
+            DeleteFileW(old_path);
+            MoveFileW(g_log_path, old_path);
+        }
+    }
     g_log_inited = TRUE;
 }
 
@@ -451,13 +467,28 @@ static void empty_all_workingsets(void) {
    太多时间重新填充缓存，释放效果接近 memreduct。 */
 #define CLEAN_STEP_DELAY_MS 150
 
+/* NTSTATUS 常见错误码 → 可读中文说明（日志里不再只是一串十六进制，
+   用户能一眼看出是权限问题还是系统不支持）。 */
+static const wchar_t *ntstatus_text(NTSTATUS st) {
+    switch ((ULONG)st) {
+    case 0xC0000061: return L"权限不足(STATUS_PRIVILEGE_NOT_HELD)";
+    case 0xC0000022: return L"拒绝访问(STATUS_ACCESS_DENIED)";
+    case 0xC0000003: return L"本系统不支持该清理项(STATUS_INVALID_INFO_CLASS)";
+    case 0xC0000004: return L"参数长度不符(STATUS_INFO_LENGTH_MISMATCH)";
+    case 0xC0000005: return L"访问冲突(STATUS_ACCESS_VIOLATION)";
+    case 0xC000000D: return L"参数无效(STATUS_INVALID_PARAMETER)";
+    case 0xC00000BB: return L"不支持该操作(STATUS_NOT_SUPPORTED)";
+    default:         return L"";
+    }
+}
+
 /* 分阶段执行单个内存列表命令，并在两次调用间留出缓冲。
    返回 FALSE 表示该步失败(不中断后续)。 */
 static void do_clean_step(SYSTEM_MEMORY_LIST_COMMAND c, const wchar_t *label, NTSTATUS *last_st) {
     NTSTATUS st = g_NtSetSystemInformation(SystemMemoryListInformation, &c, sizeof(c));
     if (last_st) *last_st = st;
     if (!NT_SUCCESS(st))
-        log_msg(L"  [!] %ls: 0x%X", label, (unsigned)st);
+        log_msg(L"  [!] %ls: 0x%X(%ls)", label, (unsigned)st, ntstatus_text(st));
     Sleep(CLEAN_STEP_DELAY_MS);   /* 给内核缓冲，避免连续调用挤压 */
 }
 
@@ -539,8 +570,9 @@ static void do_clean(ULONG mask, int allow_risky) {
                 NTSTATUS st2 = g_NtSetSystemInformation(SystemFileCacheInformation,
                     &sfci_old, sizeof(sfci_old));
                 if (!NT_SUCCESS(st2))
-                    log_msg(L"  [!] system-file-cache: Ex=0x%X, Legacy=0x%X",
-                            (unsigned)st, (unsigned)st2);
+                    log_msg(L"  [!] system-file-cache: Ex=0x%X(%ls), Legacy=0x%X(%ls)",
+                            (unsigned)st, ntstatus_text(st),
+                            (unsigned)st2, ntstatus_text(st2));
             }
         } else {
             sfci.MinimumWorkingSet = MAXSIZE_T;
@@ -548,7 +580,7 @@ static void do_clean(ULONG mask, int allow_risky) {
             st = g_NtSetSystemInformation(SystemFileCacheInformation,
                                           &sfci, sizeof(sfci));
             if (!NT_SUCCESS(st))
-                log_msg(L"  [!] system-file-cache: 0x%X", (unsigned)st);
+                log_msg(L"  [!] system-file-cache: 0x%X(%ls)", (unsigned)st, ntstatus_text(st));
         }
         Sleep(CLEAN_STEP_DELAY_MS);
     }
@@ -580,7 +612,7 @@ static void do_clean(ULONG mask, int allow_risky) {
             log_msg(L"  [!] registry-cache needs Windows 8.1+");
         } else {
             st = g_NtSetSystemInformation(SystemRegistryReconciliationInformation, NULL, 0);
-            if (!NT_SUCCESS(st)) log_msg(L"  [!] registry-cache: 0x%X", (unsigned)st);
+            if (!NT_SUCCESS(st)) log_msg(L"  [!] registry-cache: 0x%X(%ls)", (unsigned)st, ntstatus_text(st));
             Sleep(CLEAN_STEP_DELAY_MS);
         }
     }
@@ -591,7 +623,7 @@ static void do_clean(ULONG mask, int allow_risky) {
         } else {
             combine.Flags = 1; /* COMBINE_FLAGS_ALL */
             st = g_NtSetSystemInformation(SystemCombinePhysicalMemoryInformation, &combine, sizeof(combine));
-            if (!NT_SUCCESS(st)) log_msg(L"  [!] combine-memory-lists: 0x%X", (unsigned)st);
+            if (!NT_SUCCESS(st)) log_msg(L"  [!] combine-memory-lists: 0x%X(%ls)", (unsigned)st, ntstatus_text(st));
         }
     }
 
@@ -792,9 +824,9 @@ static void draw_custom_checkbox(HDC hdc, RECT *rcCtrl, const wchar_t *label,
    设计稿风格：白底灰边、悬停蓝边+光晕、右竖 22px 分两半箭头。 */
 static void draw_custom_spinner(HDC hdc, RECT *rcCtrl, int value,
                                 int pressing) {
-    /* 外框：白底浅灰边，圆角 6px */
+    /* 外框：白底浅灰边，圆角 6px；按压时蓝边高亮，给用户清晰反馈。 */
     HBRUSH brF = CreateSolidBrush(COL_BG_CARD);
-    HPEN pnB = CreatePen(PS_SOLID, 1, COL_BORDER);
+    HPEN pnB = CreatePen(PS_SOLID, 1, pressing ? COL_BLUE_DARK : COL_BORDER);
     HGDIOBJ ob = SelectObject(hdc, brF);
     HGDIOBJ op = SelectObject(hdc, pnB);
     RoundRect(hdc, rcCtrl->left, rcCtrl->top, rcCtrl->right, rcCtrl->bottom, 6, 6);
@@ -810,7 +842,7 @@ static void draw_custom_spinner(HDC hdc, RECT *rcCtrl, int value,
     int aBot = rcCtrl->bottom;
     int aMid = (aTop + aBot) / 2;
 
-    /* 竖条分隔线（左） */
+    /* 竖条分隔线（左）：用比外框更淡的颜色，避免右侧箭头区看起来太重 */
     HPEN pnSep = CreatePen(PS_SOLID, 1, RGB(238, 240, 244));
     HGDIOBJ oS = SelectObject(hdc, pnSep);
     MoveToEx(hdc, ax, aTop + 4, NULL);
@@ -825,13 +857,13 @@ static void draw_custom_spinner(HDC hdc, RECT *rcCtrl, int value,
        value 参数保留（签名兼容）。 */
     UNREFERENCED_PARAMETER(value);
 
-    /* ▲ 上 */
+    /* ▲▼ 用小号字体，避免大三角形抢走视觉重心 */
     SetBkMode(hdc, TRANSPARENT);
+    SelectObject(hdc, g_font_small);
     SetTextColor(hdc, pressing ==  1 ? COL_BLUE_DARK : COL_TEXT_DIM);
     RECT rcUp = { ax, aTop, ax + arrows_w, aMid };
     DrawTextW(hdc, L"\x25B2", -1, &rcUp, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-    /* ▼ 下 */
     SetTextColor(hdc, pressing == -1 ? COL_BLUE_DARK : COL_TEXT_DIM);
     RECT rcDn = { ax, aMid, ax + arrows_w, aBot };
     DrawTextW(hdc, L"\x25BC", -1, &rcDn, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -1012,6 +1044,19 @@ static LRESULT CALLBACK SettingsSubclassProc(
         }
     }
 
+    /* EDIT 背景/文字着色：让内嵌数字输入框与 spinner 白底融为一体，
+       同时去掉默认白色背景与黑色文字的突兀感。 */
+    if (msg == WM_CTLCOLOREDIT) {
+        HWND hedit = (HWND)lp;
+        if (hedit == g_hSpinEditThresh || hedit == g_hSpinEditInterval) {
+            SetBkColor((HDC)wp, COL_BG_CARD);
+            SetTextColor((HDC)wp, COL_TEXT_MAIN);
+            static HBRUSH br = NULL;
+            if (!br) br = CreateSolidBrush(COL_BG_CARD);
+            return (LRESULT)br;
+        }
+    }
+
     return DefSubclassProc(hCtrl, msg, wp, lp);
 }
 
@@ -1140,35 +1185,39 @@ static HWND create_edit_inside_spinner(HWND hSpin, UINT idKind, int initial_val)
     RECT rc;
     GetClientRect(hSpin, &rc);
     int arrows_w = 22;
-    /* 数字区域：left+8 到 right - arrows_w - 4，纵向占满高度，
-       保证 EDIT 完全内嵌在 spinner 框内部，不露边框，视觉与原实现一致。 */
-    int ex = 8;
-    int ey = 1;
-    int ew = (rc.right - arrows_w - 4) - ex;
-    int eh = (rc.bottom - 2) - ey;
+    /* 数字区域：左右留空、垂直居中，避免紧贴边框和箭头。
+       让 EDIT 看起来是 spinner 框内的“内凹数字区”，而不是一个独立控件。 */
+    int margin_x = 8;          /* 左侧留空 */
+    int margin_right = 8;      /* 到箭头分隔线留空 */
+    int eh = 22;               /* 输入框高度，比 spinner 行高小，留出呼吸感 */
+    int ew = (rc.right - arrows_w - margin_right) - margin_x;
+    int ex = margin_x;
+    int ey = (rc.bottom - eh) / 2;
 
-    HWND hEdit = CreateWindowExW(WS_EX_CLIENTEDGE,
+    HWND hEdit = CreateWindowExW(0,   /* 从创建起就不要 WS_EX_CLIENTEDGE */
         L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL | ES_CENTER | WS_TABSTOP,
         ex, ey, ew, eh,
         hSpin, NULL, GetModuleHandleW(NULL), NULL);
     if (!hEdit) return NULL;
 
-    /* 去掉 WS_EX_CLIENTEDGE 导致的 3D 边框 —— 保持平面风格：
-       先清除扩展边框，再自己给 EDIT 刷 spinner 卡片底色。 */
+    /* 去掉可能残留的 WS_BORDER/WS_EX_STATICEDGE/WS_EX_WINDOWEDGE 并强制刷新
+       非客户区，否则 EDIT 仍会画出一条淡淡的 3D 边框，和整体平面风格冲突。 */
     LONG_PTR exStyle = GetWindowLongPtrW(hEdit, GWL_EXSTYLE);
-    exStyle &= ~WS_EX_CLIENTEDGE;
+    exStyle &= ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE);
     SetWindowLongPtrW(hEdit, GWL_EXSTYLE, exStyle);
-    /* 清除默认边框：WS_BORDER/WS_EX_STATICEDGE 通过 GetWindowLong 再去掉 */
     LONG_PTR style = GetWindowLongPtrW(hEdit, GWL_STYLE);
-    style &= ~WS_BORDER;
+    style &= ~(WS_BORDER | WS_DLGFRAME);
     SetWindowLongPtrW(hEdit, GWL_STYLE, style);
+    SetWindowPos(hEdit, NULL, 0, 0, 0, 0,
+        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
-    /* 初始化文字 + 字体 */
+    /* 文字内边距、字体（用常规 UI 字体，不要 semibold，避免数字太粗太显眼） */
+    SendMessageW(hEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(2, 2));
     wchar_t buf[16];
     swprintf_s(buf, _countof(buf), L"%d", initial_val);
     SetWindowTextW(hEdit, buf);
-    SendMessageW(hEdit, WM_SETFONT, (WPARAM)g_font_mid, TRUE);
+    SendMessageW(hEdit, WM_SETFONT, (WPARAM)g_font_ui, TRUE);
     SendMessageW(hEdit, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
 
     /* 子类化处理回车 / 失焦 */
@@ -1883,9 +1932,7 @@ static void gui_toggle_window(void) {
 
 /* ====== 设置弹窗实现 ====== */
 
-/* （旧 sync_settings_to_ui 已废弃 — 现在在 WM_CREATE 中直接初始化 g_s_* 状态） */
-static int sync_settings_to_ui_unused(void) { return 0; }
-
+/* （旧 sync_settings_to_ui 已废弃删除 — 现在在 WM_CREATE 中直接初始化 g_s_* 状态） */
 /* 设置窗口 WM_CTLCOLORSTATIC：白底卡片与浅灰窗口 */
 static HBRUSH g_brush_settings_bg;
 static HBRUSH g_brush_hint;
@@ -1926,7 +1973,7 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             RIGHT_X, 90+SY, CW - 24, ROWH, dlg, (HMENU)S_ID_SPIN_THRESH, NULL, NULL);
         CreateWindowW(L"STATIC", L"%",
             WS_VISIBLE | WS_CHILD | SS_LEFT,
-            RIGHT_X + CW - 20, 90+SY, 20, ROWH, dlg, NULL, NULL, NULL);
+            RIGHT_X + CW - 16, 90+SY, 18, ROWH, dlg, NULL, NULL, NULL);
 
         /* Row 3 (Y=146): 左=强力模式 | 右=释放更多 按钮 */
         CreateWindowW(L"STATIC", L"强力模式",
@@ -1945,7 +1992,7 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             RIGHT_X, 202+SY, CW - 24, ROWH, dlg, (HMENU)S_ID_SPIN_INTERVAL, NULL, NULL);
         CreateWindowW(L"STATIC", L"分钟",
             WS_VISIBLE | WS_CHILD | SS_LEFT,
-            RIGHT_X + CW - 24, 202+SY, 32, ROWH, dlg, NULL, NULL, NULL);
+            RIGHT_X + CW - 16, 202+SY, 34, ROWH, dlg, NULL, NULL, NULL);
 
         /* 底部按钮：右对齐 */
         int btn_w = 104, btn_h = 36;
@@ -2021,49 +2068,9 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(dlg);
             return 0;
         }
-        /* 点击 STATIC 自定义控件 */
-        HWND hChild = ChildWindowFromPoint(dlg, pt);
-        if (!hChild) return 0;
-        int cid = GetDlgCtrlID(hChild);
-        HWND hSpinUp = NULL;
-
-        switch (cid) {
-        case S_ID_CHK_AUTO:
-            g_s_auto.checked = !g_s_auto.checked;
-            InvalidateRect(hChild, NULL, TRUE);
-            return 0;
-        case S_ID_CHK_AUTOSTART:
-            g_s_autostart.checked = !g_s_autostart.checked;
-            InvalidateRect(hChild, NULL, TRUE);
-            return 0;
-        case S_ID_CHK_AGGRO:
-            g_s_aggro.checked = !g_s_aggro.checked;
-            InvalidateRect(hChild, NULL, TRUE);
-            return 0;
-        case S_ID_SPIN_THRESH: {
-            int dir = spinner_hit(hChild, lp);
-            S_State *st = &g_s_thresh;
-            if (dir ==  1 && st->value < st->value_max) st->value++;
-            if (dir == -1 && st->value > st->value_min) st->value--;
-            st->pressing = dir;
-            SetTimer(dlg, 1, 50, NULL);   /* 长按加速 */
-            sync_spinner_edit(hChild);
-            InvalidateRect(hChild, NULL, TRUE);
-            return 0;
-        }
-        case S_ID_SPIN_INTERVAL: {
-            int dir = spinner_hit(hChild, lp);
-            S_State *st = &g_s_interval;
-            if (dir ==  1 && st->value < st->value_max) st->value++;
-            if (dir == -1 && st->value > st->value_min) st->value--;
-            st->pressing = dir;
-            SetTimer(dlg, 2, 50, NULL);
-            sync_spinner_edit(hChild);
-            InvalidateRect(hChild, NULL, TRUE);
-            return 0;
-        }
-        }
-        return 0;
+        /* 点击自定义控件的事件已由 SettingsSubclassProc 直接处理
+           （子类化控件自己接收 WM_LBUTTONDOWN），父窗口收不到该消息，
+           旧的 ChildWindowFromPoint 分支是永远不执行的死代码，已删除。 */
     }
     case WM_LBUTTONUP:
         KillTimer(dlg, 1); KillTimer(dlg, 2);
@@ -2844,10 +2851,62 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     return ret;
 }
 
+/* 动态启用 DPI 感知（Win10 1703+ PerMonitorV2 → SystemAware，旧系统回退
+   SetProcessDPIAware）。必须在创建任何窗口之前调用，否则自绘界面会被
+   系统按位图拉伸导致模糊（4K/125% 缩放下尤其明显）。 */
+static void setup_dpi_awareness(void) {
+    HMODULE hUser = GetModuleHandleW(L"user32.dll");
+    if (!hUser) return;
+    /* SetProcessDpiAwarenessContext: Win10 1703+ */
+    typedef BOOL (WINAPI *PSetProcessDpiAwarenessContext)(HANDLE value);
+    void *fn = (void *)GetProcAddress(hUser, "SetProcessDpiAwarenessContext");
+    if (fn) {
+        PSetProcessDpiAwarenessContext pSet = (PSetProcessDpiAwarenessContext)fn;
+        if (pSet((HANDLE)-4)) return;  /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */
+        if (pSet((HANDLE)-2)) return;  /* DPI_AWARENESS_CONTEXT_SYSTEM_AWARE      */
+    }
+    /* 旧系统回退 */
+    typedef BOOL (WINAPI *PSetProcessDPIAware)(void);
+    void *fn2 = (void *)GetProcAddress(hUser, "SetProcessDPIAware");
+    if (fn2) ((PSetProcessDPIAware)fn2)();
+}
+
 int wmain(int argc, wchar_t **argv) {
+    setup_dpi_awareness();   /* 创建窗口前启用 DPI 感知 */
+
+    /* 单实例互斥：防止双开后两个实例的清理线程并发调用内核内存 API
+       （并发清理正是 0xF7 蓝屏风险来源之一）。已有实例时：
+       GUI 模式弹提示并退出，命令行模式静默退出。 */
+    {
+        HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Local\\MemOpt_SingleInstance");
+        if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+            if (argc < 2)
+                MessageBoxW(NULL,
+                    L"MemOpt 已在运行。\n如需立即清理，请使用托盘菜单或主窗口按钮。",
+                    L"MemOpt", MB_OK | MB_ICONINFORMATION);
+            CloseHandle(hMutex);
+            return 0;
+        }
+        /* 首次实例：持有句柄直到进程退出（进程终止时系统自动释放互斥锁） */
+    }
+
     init_os_version();
     resolve_nt();
     load_config();   /* 从 INI 文件加载持久化设置 */
+
+    /* 启动横幅：方便在日志中定位每次启动的配置与权限状态 */
+    {
+        MEMORYSTATUSEX m;
+        m.dwLength = sizeof(m);
+        GlobalMemoryStatusEx(&m);
+        log_msg(L"== MemOpt 启动 == 内存占用 %u%% | 阈值 %d%% | 间隔 %d 分钟 | "
+                L"强力 %ls | 后台自动 %ls | 管理员 %ls",
+                (unsigned)m.dwMemoryLoad,
+                g_auto_threshold, g_auto_interval / 60000,
+                g_auto_aggressive ? L"开" : L"关",
+                g_auto_enabled ? L"开" : L"关",
+                is_elevated() ? L"是" : L"否");
+    }
 
     if (!is_elevated()) {
         /* 启动时自动调起 UAC 获取管理员权限；用户拒绝则以当前权限继续 */
