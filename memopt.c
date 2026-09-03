@@ -1575,7 +1575,9 @@ static BOOL draw_memory_card(HDC hdc, RECT *rc, const CardData *card) {
     /* 3) 顶部：label 左 + badge 右
        —— 卡片由 68→90，padding 加大（x=22, top=18），不挤压 */
     int pad_x = 22;
-    int top_y = rc->top + 18;
+    /* v7 布局：卡片内部垂直分布匀称（90px 高）：
+       顶部留白 14 · label 20 · 间距 8 · value 26 · 间距 6 · 进度条 8 · 底部 8 */
+    int top_y = rc->top + 14;
     RECT rcLabel = { rc->left + pad_x, top_y, rc->right - 110, top_y + 20 };
     SelectObject(hdc, g_font_ui);     /* label 用 UI 字体(13px)，比 small 更清晰 */
     SetTextColor(hdc, COL_TEXT_DIM);
@@ -1599,7 +1601,7 @@ static BOOL draw_memory_card(HDC hdc, RECT *rc, const CardData *card) {
               DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
     /* 4) value 大字：用 g_font_mid(13px semibold) 但高度更高 */
-    RECT rcValue = { rc->left + pad_x, top_y + 26, rc->right - pad_x, top_y + 54 };
+    RECT rcValue = { rc->left + pad_x, top_y + 28, rc->right - pad_x, top_y + 54 };
     SelectObject(hdc, g_font_mid);
     SetTextColor(hdc, UI_FG);
     DrawTextW(hdc, card->value, -1, &rcValue,
@@ -2288,18 +2290,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         /* Y 偏移（为自绘标题栏预留 32px）*/
         #define Y_OFF TITLE_BAR_H
-        #define WIN_W 480
+        #define WIN_W 500
         #define PAD 20
 
-        /* Hero 区 — 大号百分比 + 环形进度条视觉中心 */
+        /* Hero 区 — 大号百分比 + 环形进度条视觉中心
+           垂直排布（v7，间距对称）：
+           大百分比 16~76 · 信息文字 80~102 · 进度条 110~120 ·
+           hero 底 136，上下留白 14/16px */
         g_hPct = CreateWindowW(L"STATIC", L"--",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            PAD, 32 + Y_OFF, WIN_W - PAD * 2, 60, hwnd, NULL, NULL, NULL);
+            PAD, 16 + Y_OFF, WIN_W - PAD * 2, 60, hwnd, NULL, NULL, NULL);
 
         /* Hero 区 — "内存已使用 X.X GB / XX.X GB" 信息文字 */
         g_hMemInfo = CreateWindowW(L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            PAD, 96 + Y_OFF, WIN_W - PAD * 2, 22, hwnd, NULL, NULL, NULL);
+            PAD, 80 + Y_OFF, WIN_W - PAD * 2, 22, hwnd, NULL, NULL, NULL);
         SendMessageW(g_hMemInfo, WM_SETFONT, (WPARAM)g_font_small, TRUE);
 
         /* 进度条改为 WM_PAINT 自绘，不再创建 PROGRESS_CLASS */
@@ -2309,7 +2314,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
            （用户反馈"条太窄"，加高后进度条也能加粗到 8px） */
         int card_y  = 136 + Y_OFF;
         int card_h  = 90;
-        int card_gap = 12;
+        int card_gap = 14;   /* v7：卡片间距加大，视觉更透气 */
         int card_w  = WIN_W - PAD * 2;
         
         g_hTotalMem = CreateWindowExW(0, L"STATIC", L"",
@@ -2325,26 +2330,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             PAD, card_y + 2 * (card_h + card_gap), card_w, card_h,
             hwnd, (HMENU)ID_CARD_SYSWS, NULL, NULL);
 
-        /* 底部按钮行：[立即清理] [设置] —— 统一高 44px，间距调整 */
+        /* 底部按钮行：[立即清理] [设置] —— v7 宽度协调：
+           270 + 20 间距 + 170 = 460，左右缘与卡片对齐 */
         int btn_y = card_y + 3 * card_h + 2 * card_gap + 20;
         int btn_h = 44;
         CreateWindowW(L"BUTTON", L"立即清理",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            PAD, btn_y, WIN_W - PAD * 2 - 136, btn_h,
+            PAD, btn_y, 270, btn_h,
             hwnd, (HMENU)ID_BTN_CLEAN, NULL, NULL);
         CreateWindowW(L"BUTTON", L"设置",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            WIN_W - PAD - 120, btn_y, 120, btn_h,
+            WIN_W - PAD - 170, btn_y, 170, btn_h,
             hwnd, (HMENU)ID_BTN_SETTINGS, NULL, NULL);
 
         /* 底部状态条 —— 设计稿风格：白底 1px 描边 + 左侧绿点（自绘）。
-           高度改为 72px 支持两行：
+           高度 68px 支持两行（v7 压缩，底部不再空 8px）：
            行1：[绿点] 后台清理已启用 · 每 X 分钟 · 阈值 Y%
            行2：     上次清理: xxx  释放 xxx MB（完整显示不截断） */
         int status_y = btn_y + btn_h + 20;
         g_hStatus = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW,
-            PAD, status_y, WIN_W - PAD * 2, 72,
+            PAD, status_y, WIN_W - PAD * 2, 68,
             hwnd, (HMENU)ID_TXT_STATUS, NULL, NULL);
 
         EnumChildWindows(hwnd, set_child_font, (LPARAM)g_font_ui);
@@ -2450,7 +2456,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         /* 7) 自绘进度条（居中加宽，视觉更扎实） */
         int bar_ht = 10;
-        RECT rcBar = { 40, 106 + TITLE_BAR_H, rc.right - 40, 106 + TITLE_BAR_H + bar_ht };
+        /* v7：进度条下移 110 → 与信息文字(80~102)不再重叠（旧 106 时被
+           文字 STATIC 的白底遮盖，进度条看起来断断续续） */
+        RECT rcBar = { 40, 110 + TITLE_BAR_H, rc.right - 40, 110 + TITLE_BAR_H + bar_ht };
         COLORREF bar_col = UI_ACCENT;
         /* 降低焦虑感：仅在 >85% 时变橙，>92% 变红 */
         if (g_progress_pct >= 92) bar_col = ALERT_RED;
@@ -2576,7 +2584,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             /* 绿点 3D 指示器（对准第一行中心 y = top + 24） */
             int cxDot = rc->left + 22;
-            int cyDot = rc->top + 24;
+            int cyDot = rc->top + 23;   /* 对准行1中心（行1: 12~34） */
             HBRUSH brHalo1 = CreateSolidBrush(RGB(215, 246, 228));
             HBRUSH brHalo2 = CreateSolidBrush(RGB(170, 230, 196));
             HBRUSH brHalo3 = CreateSolidBrush(ALERT_GREEN);
@@ -2631,14 +2639,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             /* 行1：略深、略主字体 g_font_ui，y = top + 14 → top+34 (高 20) */
             SelectObject(di->hDC, g_font_ui);
             SetTextColor(di->hDC, RGB(60, 66, 78));
-            RECT rcL1 = { textX, rc->top + 14, rc->right - 16, rc->top + 36 };
+            RECT rcL1 = { textX, rc->top + 12, rc->right - 16, rc->top + 34 };
             DrawTextW(di->hDC, line1, -1, &rcL1,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
             /* 行2：上次清理信息 — 小一号字体，颜色更淡，缩进保持与 line1 对齐 */
             SelectObject(di->hDC, g_font_small);
             SetTextColor(di->hDC, RGB(124, 133, 148));
-            RECT rcL2 = { textX, rc->top + 42, rc->right - 16, rc->top + 64 };
+            RECT rcL2 = { textX, rc->top + 38, rc->right - 16, rc->top + 60 };
             DrawTextW(di->hDC, line2, -1, &rcL2,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             return TRUE;
@@ -2792,11 +2800,11 @@ static void run_gui(void) {
     wc.lpszClassName = L"MemOptClass";
     RegisterClassW(&wc);
 
-    /* 主窗口：WS_POPUP 自绘标题栏 —— 480x620：更宽松面板比例，
-       让三张卡片、底部状态条(两行)不挤压 */
+    /* 主窗口：WS_POPUP 自绘标题栏 —— v7: 500x620，加宽 20px
+       让卡片/按钮/状态条比例更舒展（480 时按钮行右缘收不齐） */
     g_hwnd = CreateWindowExW(0, L"MemOptClass", L"MemOpt",
         WS_POPUP | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 480, 620,
+        CW_USEDEFAULT, CW_USEDEFAULT, 500, 620,
         NULL, NULL, GetModuleHandleW(NULL), NULL);
     /* 强制使用图标资源（覆盖系统默认） */
     SendMessageW(g_hwnd, WM_SETICON, ICON_BIG,
