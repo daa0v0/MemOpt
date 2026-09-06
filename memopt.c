@@ -1325,9 +1325,38 @@ static void start_clean_ex(ULONG region, int allow_risky, int source);
 #define BADGE_KERN_FG  RGB(75, 85, 99)
 
 /* ====== 自绘标题栏 ====== */
-#define TITLE_BAR_H   32
-#define WIN_BTN_W     36
-#define WIN_BTN_H     28
+/* ===== DPI 自适应缩放 =====
+   UI 以 96 DPI（100%）为设计基准。屏幕 DPI>96 时等比放大，但**封顶 115%**：
+   这是轻量小工具，125~/150% 的 10~15" 笔记本上若线性等比（1.25/1.5 倍）
+   窗口会占满屏幕、过于臃肿。封顶 115% 既能保证小屏可读，又不至于过大。
+   g_ui_scale 在 wmain 启动时由 init_ui_dpi() 设置。 */
+static int g_ui_scale = 100;              /* 当前 UI 缩放百分比（基准 100） */
+static int uis_scale(int v) { return (int)MulDiv(v, g_ui_scale, 100); }
+#define UIS(x) uis_scale((x))             /* 设计像素 → 物理像素 */
+
+static void init_ui_dpi(void) {
+    int dpi = 96;
+    HMODULE hU = GetModuleHandleW(L"user32.dll");
+    if (hU) {
+        typedef UINT (WINAPI *PGDS)(void);
+        PGDS pg = (PGDS)GetProcAddress(hU, "GetDpiForSystem");
+        if (pg) dpi = (int)pg();
+    }
+    if (dpi <= 0) {
+        HDC dc = GetDC(NULL);
+        dpi = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(NULL, dc);
+        if (dpi <= 0) dpi = 96;
+    }
+    int scale = (int)MulDiv(dpi, 100, 96);
+    if (scale > 115) scale = 115;   /* 小工具勿过大：UI 放大封顶 115% */
+    if (scale < 100) scale = 100;
+    g_ui_scale = scale;
+}
+
+#define TITLE_BAR_H   UIS(32)
+#define WIN_BTN_W     UIS(36)
+#define WIN_BTN_H     UIS(28)
 #define TB_BG         RGB(255, 255, 255)  /* 白色 */
 #define TB_FG         RGB(75, 85, 99)     /* 灰色文字 */
 #define TB_BORDER     RGB(229, 231, 235)  /* 底部分隔线 */
@@ -1339,7 +1368,7 @@ static int g_win_btn_hover = 0;  /* -1=close, 1=min, 0=none */
 
 /* 绘制 M 品牌 logo：20x20 蓝色圆角方块 + 白色 "M" */
 static void draw_m_logo(HDC hdc, int x, int y) {
-    int s = 22;
+    int s = UIS(22);
     /* 蓝底方块 */
     HBRUSH br = CreateSolidBrush(RGB(59, 130, 246));
     HPEN pn = CreatePen(PS_SOLID, 1, RGB(59, 130, 246));
@@ -1351,7 +1380,7 @@ static void draw_m_logo(HDC hdc, int x, int y) {
     /* 白色 M */
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(255, 255, 255));
-    HFONT f = CreateFontW(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+    HFONT f = CreateFontW(-UIS(12), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     HGDIOBJ of = SelectObject(hdc, f);
@@ -1381,14 +1410,14 @@ static void draw_win_button(HDC hdc, int x, int y, int kind, int hover) {
     int cy = y + WIN_BTN_H / 2;
     if (kind == 1) {
         /* 最小化：水平线 */
-        MoveToEx(hdc, cx - 5, cy, NULL);
-        LineTo(hdc, cx + 5, cy);
+        MoveToEx(hdc, cx - UIS(5), cy, NULL);
+        LineTo(hdc, cx + UIS(5), cy);
     } else if (kind == -1) {
         /* 关闭：X */
-        MoveToEx(hdc, cx - 4, cy - 4, NULL);
-        LineTo(hdc, cx + 4, cy + 4);
-        MoveToEx(hdc, cx + 4, cy - 4, NULL);
-        LineTo(hdc, cx - 4, cy + 4);
+        MoveToEx(hdc, cx - UIS(4), cy - UIS(4), NULL);
+        LineTo(hdc, cx + UIS(4), cy + UIS(4));
+        MoveToEx(hdc, cx + UIS(4), cy - UIS(4), NULL);
+        LineTo(hdc, cx - UIS(4), cy + UIS(4));
     }
     SelectObject(hdc, op); DeleteObject(pn);
 }
@@ -1410,16 +1439,17 @@ static void init_ui_res(void) {
     static int inited = 0;
     if (inited) return;
     /* v6: 大号百分比 36px 蓝色粗体 */
-    g_font_big   = CreateFontW(-36, 0, 0, 0, FW_BOLD,   0, 0, 0, DEFAULT_CHARSET,
+    /* 字体按 DPI 缩放：负值=像素高，乘 UIS 后 125%/150% 下自动放大变清晰 */
+    g_font_big   = CreateFontW(-UIS(36), 0, 0, 0, FW_BOLD,   0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-    g_font_ui    = CreateFontW(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+    g_font_ui    = CreateFontW(-UIS(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-    g_font_small = CreateFontW(-11, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+    g_font_small = CreateFontW(-UIS(11), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-    g_font_mid   = CreateFontW(-13, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+    g_font_mid   = CreateFontW(-UIS(13), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
     g_brush_bg   = CreateSolidBrush(UI_BG);
@@ -1536,11 +1566,11 @@ static BOOL draw_memory_card(HDC hdc, RECT *rc, const CardData *card) {
 
     /* 3) 顶部：label 左 + badge 右
        —— 卡片由 68→90，padding 加大（x=22, top=18），不挤压 */
-    int pad_x = 22;
+    int pad_x = UIS(22);
     /* v7 布局：卡片内部垂直分布匀称（90px 高）：
        顶部留白 14 · label 20 · 间距 8 · value 26 · 间距 6 · 进度条 8 · 底部 8 */
-    int top_y = rc->top + 14;
-    RECT rcLabel = { rc->left + pad_x, top_y, rc->right - 110, top_y + 20 };
+    int top_y = rc->top + UIS(14);
+    RECT rcLabel = { rc->left + pad_x, top_y, rc->right - UIS(110), top_y + UIS(20) };
     SelectObject(hdc, g_font_ui);     /* label 用 UI 字体(13px)，比 small 更清晰 */
     SetTextColor(hdc, COL_TEXT_DIM);
     DrawTextW(hdc, card->label, -1, &rcLabel,
@@ -1549,12 +1579,12 @@ static BOOL draw_memory_card(HDC hdc, RECT *rc, const CardData *card) {
     SIZE sz;
     SelectObject(hdc, g_font_ui);
     GetTextExtentPoint32W(hdc, card->badge, (int)wcslen(card->badge), &sz);
-    int bw = sz.cx + 24, bh = 24;   /* 徽章扩大 20→24 高，x-padding 9→12 */
+    int bw = sz.cx + UIS(24), bh = UIS(24);   /* 徽章扩大 20→24 高，x-padding 9→12 */
     int bx = rc->right - pad_x - bw;
-    int by = top_y - 2;
+    int by = top_y - UIS(2);
     HBRUSH brB = CreateSolidBrush(brBgBad);
     HGDIOBJ oB = SelectObject(hdc, brB);
-    RoundRect(hdc, bx, by, bx + bw, by + bh, 12, 12);
+    RoundRect(hdc, bx, by, bx + bw, by + bh, UIS(12), UIS(12));
     SelectObject(hdc, oB);
     DeleteObject(brB);
     SetTextColor(hdc, fgBad);
@@ -1563,7 +1593,7 @@ static BOOL draw_memory_card(HDC hdc, RECT *rc, const CardData *card) {
               DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
     /* 4) value 大字：用 g_font_mid(13px semibold) 但高度更高 */
-    RECT rcValue = { rc->left + pad_x, top_y + 28, rc->right - pad_x, top_y + 54 };
+    RECT rcValue = { rc->left + pad_x, top_y + UIS(28), rc->right - pad_x, top_y + UIS(54) };
     SelectObject(hdc, g_font_mid);
     SetTextColor(hdc, UI_FG);
     DrawTextW(hdc, card->value, -1, &rcValue,
@@ -1571,12 +1601,12 @@ static BOOL draw_memory_card(HDC hdc, RECT *rc, const CardData *card) {
 
     /* 5) 底部进度条：4→8px（加粗，让"条"不再"窄"），圆角 4 */
     int bar_x = rc->left + pad_x;
-    int bar_y = rc->bottom - 16;
+    int bar_y = rc->bottom - UIS(16);
     int bar_w = rc->right - rc->left - pad_x * 2;
-    int bar_h = 8;
+    int bar_h = UIS(8);
     HBRUSH brTrack = CreateSolidBrush(CARD_DIVIDER);
     HGDIOBJ oT = SelectObject(hdc, brTrack);
-    RoundRect(hdc, bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, 4, 4);
+    RoundRect(hdc, bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, UIS(4), UIS(4));
     SelectObject(hdc, oT);
     DeleteObject(brTrack);
     int fill_w = (int)((double)bar_w * pct / 100.0);
@@ -1712,11 +1742,18 @@ static void gui_refresh_status(void) {
 
     /* 总内存卡片：used_gb / total_gb GB 已用。
        badge 固定为 "内存"（分类标签，非百分比） */
-    swprintf(g_card_total.value,  _countof(g_card_total.value),
-             L"%.1f GB / %.1f GB", used_gb, total_gb);
-    wcscpy_s(g_card_total.badge,  _countof(g_card_total.badge), L"内存");
-    g_card_total.pct = (int)used_pct;
-    if (g_hTotalMem) InvalidateRect(g_hTotalMem, NULL, TRUE);
+    /* 仅当数值/进度变化才更新卡片，避免整窗白重绘（24h 常驻关键） */
+    {
+        wchar_t new_val[64];
+        swprintf(new_val, _countof(new_val), L"%.1f GB / %.1f GB", used_gb, total_gb);
+        int new_pct = (int)used_pct;
+        if (new_pct != g_card_total.pct || wcscmp(new_val, g_card_total.value) != 0) {
+            wcscpy_s(g_card_total.value, _countof(g_card_total.value), new_val);
+            wcscpy_s(g_card_total.badge, _countof(g_card_total.badge), L"内存");
+            g_card_total.pct = new_pct;
+            if (g_hTotalMem) InvalidateRect(g_hTotalMem, NULL, TRUE);
+        }
+    }
 
     /* 页面使用卡片：commit_used / commit_limit GB。
        badge 固定为 "页面"（分类标签，非百分比）。 */
@@ -1725,12 +1762,15 @@ static void gui_refresh_status(void) {
                               / (1024.0 * 1024 * 1024);
         double commit_limit = (double)m.ullTotalPageFile
                               / (1024.0 * 1024 * 1024);
-        double page_pct     = commit_limit ? (commit_used / commit_limit) * 100.0 : 0;
-        swprintf(g_card_page.value, _countof(g_card_page.value),
-                 L"%.1f GB / %.1f GB", commit_used, commit_limit);
-        wcscpy_s(g_card_page.badge, _countof(g_card_page.badge), L"页面");
-        g_card_page.pct = (int)page_pct;
-        if (g_hPageMem) InvalidateRect(g_hPageMem, NULL, TRUE);
+        int new_pct = commit_limit ? (int)((commit_used / commit_limit) * 100.0) : 0;
+        wchar_t new_val[64];
+        swprintf(new_val, _countof(new_val), L"%.1f GB / %.1f GB", commit_used, commit_limit);
+        if (new_pct != g_card_page.pct || wcscmp(new_val, g_card_page.value) != 0) {
+            wcscpy_s(g_card_page.value, _countof(g_card_page.value), new_val);
+            wcscpy_s(g_card_page.badge, _countof(g_card_page.badge), L"页面");
+            g_card_page.pct = new_pct;
+            if (g_hPageMem) InvalidateRect(g_hPageMem, NULL, TRUE);
+        }
     }
 
     /* 系统工作集卡片：KernelPaged+KernelNonpaged (GB) + "内核" 徽章。
@@ -1738,44 +1778,53 @@ static void gui_refresh_status(void) {
     {
         double sys_ws = (double)(pi.KernelPaged + pi.KernelNonpaged)
                         * (double)pi.PageSize / (1024.0 * 1024.0 * 1024.0);
-        swprintf(g_card_sysws.value, _countof(g_card_sysws.value),
-                 L"%.2f GB · 内核内存", sys_ws);
-        wcscpy_s(g_card_sysws.badge, _countof(g_card_sysws.badge), L"内核");
+        wchar_t new_val[64];
+        swprintf(new_val, _countof(new_val), L"%.2f GB · 内核内存", sys_ws);
         /* 用 sys_ws 对比 4 GB 做粗略参考填充值，避免一眼看上去为空 */
-        g_card_sysws.pct = (int)((sys_ws / 4.0) * 100.0);
-        if (g_card_sysws.pct > 100) g_card_sysws.pct = 100;
-        if (g_card_sysws.pct < 0)   g_card_sysws.pct = 0;
-        if (g_hSysWS) InvalidateRect(g_hSysWS, NULL, TRUE);
+        int new_pct = (int)((sys_ws / 4.0) * 100.0);
+        if (new_pct > 100) new_pct = 100;
+        if (new_pct < 0)   new_pct = 0;
+        if (new_pct != g_card_sysws.pct || wcscmp(new_val, g_card_sysws.value) != 0) {
+            wcscpy_s(g_card_sysws.value, _countof(g_card_sysws.value), new_val);
+            wcscpy_s(g_card_sysws.badge, _countof(g_card_sysws.badge), L"内核");
+            g_card_sysws.pct = new_pct;
+            if (g_hSysWS) InvalidateRect(g_hSysWS, NULL, TRUE);
+        }
     }
 
-    /* 顶部大号百分比 */
-    if (g_hPct) {
-        wchar_t t[80];
+    /* 顶部大号百分比（文字变化才更新） */
+    {
+        static wchar_t s_pct[16] = L"";
+        wchar_t t[16];
         swprintf(t, _countof(t), L"%d%%", pct);
-        SetWindowTextW(g_hPct, t);
+        if (wcscmp(t, s_pct) != 0) {
+            wcscpy_s(s_pct, _countof(s_pct), t);
+            if (g_hPct) SetWindowTextW(g_hPct, t);
+        }
     }
 
-    /* Hero 区 — 内存已使用信息 */
-    if (g_hMemInfo) {
+    /* Hero 区 — 内存已使用信息（文字变化才更新） */
+    {
+        static wchar_t s_info[160] = L"";
         wchar_t info[128];
         swprintf(info, _countof(info),
                  L"\u5185\u5B58\u5DF2\u4F7F\u7528 %.1f GB / %.1f GB",
                  used_gb, total_gb);
-        SetWindowTextW(g_hMemInfo, info);
+        if (wcscmp(info, s_info) != 0) {
+            wcscpy_s(s_info, _countof(s_info), info);
+            if (g_hMemInfo) SetWindowTextW(g_hMemInfo, info);
+        }
     }
 
-    /* 触发主窗口重绘（大百分比/卡片进度条随定时器刷新） */
-    InvalidateRect(g_hwnd, NULL, FALSE);
+    /* 主窗口背景（Hero 白区/标题栏/边框）为纯静态绘制，无需每周期
+       InvalidateRect 重画 —— 窗口遮挡/恢复时系统会自动发 WM_PAINT。
+       这对 24h 常驻后台应用很关键：杜绝整窗白重绘。 */
 
-    /* 状态卡片：上次清理信息。
-       状态条改为 WM_DRAWITEM 自绘（带绿点指示器，设计稿风格）。
-       这里只需存储显示数据，真正画绿点+文字在 WM_DRAWITEM / draw_status_bar 里。 */
-    if (g_hStatus) {
-        ULONG64 now = GetTickCount64();
-        ULONG64 elapsed_ms = (g_last_clean_tick && now > g_last_clean_tick)
-                            ? (now - g_last_clean_tick) : 0;
-        if (!g_last_clean_tick) elapsed_ms = 0;
-
+    /* 状态条：文本与内存刷新无关（配置/上次清理信息），只在内容真正
+       变化时才 SetWindowTextW + 重绘 —— 绝大多数周期（仅内存波动）直接跳过，
+       省掉一次 WM_DRAWITEM 全自绘（绿点+两行文字+圆角）。 */
+    {
+        static wchar_t s_status[512] = L"";
         wchar_t last[96];
         if (g_last_clean_tick) {
             swprintf(last, _countof(last), L"上次清理: %ls  释放 %.1f MB",
@@ -1783,11 +1832,6 @@ static void gui_refresh_status(void) {
         } else {
             wcscpy_s(last, _countof(last), L"上次清理: 暂无");
         }
-
-        /* 两行显示（状态条 72px 高）：
-           行1（与绿点水平对齐）：后台清理已(启用|停用) · 每 X 分钟 · 阈值 Y%
-           行2（缩进对齐）：上次清理: xxx  释放 xxx MB（完整不截断）
-           存储格式："\x25CF/X line1 \n line2" —— WM_DRAWITEM 按 \n 拆成两行画。 */
         wchar_t line1[128];
         if (g_auto_enabled) {
             swprintf(line1, _countof(line1),
@@ -1800,17 +1844,28 @@ static void gui_refresh_status(void) {
         swprintf(buf, _countof(buf),
             L"%ls\t%ls\n%ls",
             g_auto_enabled ? L"\x25CF" : L"\x25CB", line1, last);
-        SetWindowTextW(g_hStatus, buf);
-        InvalidateRect(g_hStatus, NULL, TRUE);
+        if (wcscmp(buf, s_status) != 0) {
+            wcscpy_s(s_status, _countof(s_status), buf);
+            if (g_hStatus) {
+                SetWindowTextW(g_hStatus, buf);
+                InvalidateRect(g_hStatus, NULL, TRUE);
+            }
+        }
     }
 }
 
-static void gui_update_tray(void) {
+static void gui_update_tray(BOOL force) {
     MEMORYSTATUSEX m;
     m.dwLength = sizeof(m);
     GlobalMemoryStatusEx(&m);
     int pct = (int)m.dwMemoryLoad;
     if (pct > 100) pct = 100;
+
+    /* 性能：百分比未变时跳过图标重建 + Shell_NotifyIcon ——
+       这是 24h 常驻应用最大的周期性开销（画图 + explorer IPC）。 */
+    static int s_last_tray_pct = -1;
+    if (!force && pct == s_last_tray_pct) return;
+    s_last_tray_pct = pct;
 
     wchar_t tip[128];
     swprintf(tip, _countof(tip), L"MemOpt  %d%%", pct);
@@ -1912,60 +1967,60 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_s_interval.value < 1) g_s_interval.value = 1;
         g_s_aggro.checked    = g_auto_aggressive;
 
-        /* ========== 清晰的两列栅格：左列 PAD_X~RIGHT_X，右列 RIGHT_X 开始 ========== */
+        /* ========== 清晰的两列栅格（DPI 缩放）：左列 PAD_X~RIGHT_X，右列 RIGHT_X 开始 ========== */
         #define SY          TITLE_BAR_H
-        #define PAD_X       24
-        #define RIGHT_X     250   /* 右列控件起始X */
-        #define CW          116   /* 右列控件宽度 */
-        #define ROWH        36    /* 行高 */
+        #define PAD_X       UIS(24)
+        #define RIGHT_X     UIS(250)   /* 右列控件起始X */
+        #define CW          UIS(116)   /* 右列控件宽度 */
+        #define ROWH        UIS(36)    /* 行高 */
 
         /* Row 1 (Y=28): 左=后台自动清理 | 右=开机自启动 */
         CreateWindowW(L"STATIC", L"后台自动清理",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW | SS_NOTIFY,
-            PAD_X, 28+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_CHK_AUTO, NULL, NULL);
+            PAD_X, UIS(28)+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_CHK_AUTO, NULL, NULL);
         CreateWindowW(L"STATIC", L"开机自启动",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW | SS_NOTIFY,
-            RIGHT_X, 28+SY, CW, ROWH, dlg, (HMENU)S_ID_CHK_AUTOSTART, NULL, NULL);
+            RIGHT_X, UIS(28)+SY, CW, ROWH, dlg, (HMENU)S_ID_CHK_AUTOSTART, NULL, NULL);
 
         /* Row 2 (Y=90): 左=清理阈值 | 右=数字调节器 + % */
         CreateWindowW(L"STATIC", L"清理阈值",
             WS_VISIBLE | WS_CHILD | SS_LEFT,
-            PAD_X, 90+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_LBL_THRESH, NULL, NULL);
+            PAD_X, UIS(90)+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_LBL_THRESH, NULL, NULL);
         CreateWindowW(L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW | SS_NOTIFY,
-            RIGHT_X, 90+SY, CW - 24, ROWH, dlg, (HMENU)S_ID_SPIN_THRESH, NULL, NULL);
+            RIGHT_X, UIS(90)+SY, CW - UIS(24), ROWH, dlg, (HMENU)S_ID_SPIN_THRESH, NULL, NULL);
         CreateWindowW(L"STATIC", L"%",
             WS_VISIBLE | WS_CHILD | SS_LEFT,
-            RIGHT_X + CW - 16, 90+SY, 18, ROWH, dlg, NULL, NULL, NULL);
+            RIGHT_X + CW - UIS(16), UIS(90)+SY, UIS(18), ROWH, dlg, NULL, NULL, NULL);
 
         /* Row 3 (Y=146): 左=强力模式 | 右=释放更多 按钮 */
         CreateWindowW(L"STATIC", L"强力模式",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW | SS_NOTIFY,
-            PAD_X, 146+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_CHK_AGGRO, NULL, NULL);
+            PAD_X, UIS(146)+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_CHK_AGGRO, NULL, NULL);
         CreateWindowW(L"BUTTON", L"释放更多",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            RIGHT_X, 150+SY, 88, 28, dlg, (HMENU)S_ID_BTN_MORE, NULL, NULL);
+            RIGHT_X, UIS(150)+SY, UIS(88), UIS(28), dlg, (HMENU)S_ID_BTN_MORE, NULL, NULL);
 
         /* Row 4 (Y=202): 左=清理间隔 | 右=数字调节器 + 分钟 */
         CreateWindowW(L"STATIC", L"清理间隔",
             WS_VISIBLE | WS_CHILD | SS_LEFT,
-            PAD_X, 202+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_LBL_INTERVAL, NULL, NULL);
+            PAD_X, UIS(202)+SY, RIGHT_X - PAD_X, ROWH, dlg, (HMENU)S_ID_LBL_INTERVAL, NULL, NULL);
         CreateWindowW(L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW | SS_NOTIFY,
-            RIGHT_X, 202+SY, CW - 24, ROWH, dlg, (HMENU)S_ID_SPIN_INTERVAL, NULL, NULL);
+            RIGHT_X, UIS(202)+SY, CW - UIS(24), ROWH, dlg, (HMENU)S_ID_SPIN_INTERVAL, NULL, NULL);
         CreateWindowW(L"STATIC", L"分钟",
             WS_VISIBLE | WS_CHILD | SS_LEFT,
-            RIGHT_X + CW - 16, 202+SY, 34, ROWH, dlg, NULL, NULL, NULL);
+            RIGHT_X + CW - UIS(16), UIS(202)+SY, UIS(34), ROWH, dlg, NULL, NULL, NULL);
 
         /* 底部按钮：右对齐 */
-        int btn_w = 104, btn_h = 36;
-        int btn_y = 278; /* 360 - 36 - 46 (底部留白) */
+        int btn_w = UIS(104), btn_h = UIS(36);
+        int btn_y = UIS(278); /* 360 - 36 - 46 (底部留白) */
         CreateWindowW(L"BUTTON", L"取消",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            400 - btn_w * 2 - 24 - 16, btn_y, btn_w, btn_h, dlg, (HMENU)S_ID_BTN_CANCEL, NULL, NULL);
+            UIS(400) - btn_w * 2 - UIS(24) - UIS(16), btn_y, btn_w, btn_h, dlg, (HMENU)S_ID_BTN_CANCEL, NULL, NULL);
         CreateWindowW(L"BUTTON", L"保存设置",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            400 - btn_w - 24, btn_y, btn_w, btn_h, dlg, (HMENU)S_ID_BTN_OK, NULL, NULL);
+            UIS(400) - btn_w - UIS(24), btn_y, btn_w, btn_h, dlg, (HMENU)S_ID_BTN_OK, NULL, NULL);
 
         #undef SY
         #undef PAD_X
@@ -2081,11 +2136,11 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         /* 标题文字 */
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, TB_FG);
-        HFONT fTB = CreateFontW(-13, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+        HFONT fTB = CreateFontW(-UIS(13), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HGDIOBJ ofTB = SelectObject(hdc, fTB);
-        RECT rcTxt = { 12, 0, 180, TITLE_BAR_H };
+        RECT rcTxt = { UIS(12), 0, UIS(180), TITLE_BAR_H };
         DrawTextW(hdc, L"MemOpt \u00B7 \u8BBE\u7F6E", -1, &rcTxt,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(hdc, ofTB); DeleteObject(fTB);
@@ -2150,7 +2205,7 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             HGDIOBJ ob = SelectObject(di->hDC, br);
             HGDIOBJ op = SelectObject(di->hDC, pn);
             RoundRect(di->hDC, di->rcItem.left, di->rcItem.top,
-                      di->rcItem.right, di->rcItem.bottom, 8, 8);
+                      di->rcItem.right, di->rcItem.bottom, UIS(8), UIS(8));
             SelectObject(di->hDC, ob);
             SelectObject(di->hDC, op);
             DeleteObject(br); DeleteObject(pn);
@@ -2175,7 +2230,7 @@ static LRESULT CALLBACK SettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             DeleteObject(br);
             HPEN pn = CreatePen(PS_SOLID, 1, COL_BORDER);
             HGDIOBJ op = SelectObject(di->hDC, pn);
-            RoundRect(di->hDC, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
+            RoundRect(di->hDC, rc.left, rc.top, rc.right, rc.bottom, UIS(8), UIS(8));
             SelectObject(di->hDC, op);
             DeleteObject(pn);
             SetBkMode(di->hDC, TRANSPARENT);
@@ -2223,7 +2278,7 @@ static void open_settings(void) {
 
     /* 居中位于主窗口 —— 尺寸放大到 400x360，两列栅格更宽敞 */
     RECT rc; GetWindowRect(g_hwnd, &rc);
-    int cx = 400, cy = 360;
+    int cx = UIS(400), cy = UIS(360);
     int x = rc.left + ((rc.right - rc.left) - cx) / 2;
     int y = rc.top  + ((rc.bottom - rc.top) - cy) / 2;
     if (x < 0) x = 0; if (y < 0) y = 0;
@@ -2251,27 +2306,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         /* Y 偏移（为自绘标题栏预留 32px）*/
         #define Y_OFF TITLE_BAR_H
-        #define WIN_W 500
-        #define PAD 20
+        #define WIN_W UIS(500)
+        #define PAD   UIS(20)
 
         /* Hero 区 — 大号百分比 + 内存信息（v8：去掉了大进度条，只剩两行）：
            大百分比 22~82 · 信息文字 92~114 · hero 底 136，
            上下各留白 22px 完全对称 */
         g_hPct = CreateWindowW(L"STATIC", L"--",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            PAD, 22 + Y_OFF, WIN_W - PAD * 2, 60, hwnd, NULL, NULL, NULL);
+            PAD, UIS(22) + Y_OFF, WIN_W - PAD * 2, UIS(60), hwnd, NULL, NULL, NULL);
 
         /* Hero 区 — "内存已使用 X.X GB / XX.X GB" 信息文字 */
         g_hMemInfo = CreateWindowW(L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            PAD, 92 + Y_OFF, WIN_W - PAD * 2, 22, hwnd, NULL, NULL, NULL);
+            PAD, UIS(92) + Y_OFF, WIN_W - PAD * 2, UIS(22), hwnd, NULL, NULL, NULL);
         SendMessageW(g_hMemInfo, WM_SETFONT, (WPARAM)g_font_small, TRUE);
 
         /* 三张内存卡片（竖排）—— hero 底部 136, 卡片加高到 90px, 间距 12px
            （用户反馈"条太窄"，加高后进度条也能加粗到 8px） */
-        int card_y  = 136 + Y_OFF;
-        int card_h  = 90;
-        int card_gap = 14;   /* v7：卡片间距加大，视觉更透气 */
+        int card_y  = UIS(136) + Y_OFF;
+        int card_h  = UIS(90);
+        int card_gap = UIS(14);   /* v7：卡片间距加大，视觉更透气 */
         int card_w  = WIN_W - PAD * 2;
         
         g_hTotalMem = CreateWindowExW(0, L"STATIC", L"",
@@ -2289,25 +2344,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         /* 底部按钮行：[立即清理] [设置] —— v7 宽度协调：
            270 + 20 间距 + 170 = 460，左右缘与卡片对齐 */
-        int btn_y = card_y + 3 * card_h + 2 * card_gap + 20;
-        int btn_h = 44;
+        int btn_y = card_y + 3 * card_h + 2 * card_gap + UIS(20);
+        int btn_h = UIS(44);
         CreateWindowW(L"BUTTON", L"立即清理",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            PAD, btn_y, 270, btn_h,
+            PAD, btn_y, UIS(270), btn_h,
             hwnd, (HMENU)ID_BTN_CLEAN, NULL, NULL);
         CreateWindowW(L"BUTTON", L"设置",
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            WIN_W - PAD - 170, btn_y, 170, btn_h,
+            WIN_W - PAD - UIS(170), btn_y, UIS(170), btn_h,
             hwnd, (HMENU)ID_BTN_SETTINGS, NULL, NULL);
 
         /* 底部状态条 —— 设计稿风格：白底 1px 描边 + 左侧绿点（自绘）。
            高度 68px 支持两行（v7 压缩，底部不再空 8px）：
            行1：[绿点] 后台清理已启用 · 每 X 分钟 · 阈值 Y%
            行2：     上次清理: xxx  释放 xxx MB（完整显示不截断） */
-        int status_y = btn_y + btn_h + 20;
+        int status_y = btn_y + btn_h + UIS(20);
         g_hStatus = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_OWNERDRAW,
-            PAD, status_y, WIN_W - PAD * 2, 68,
+            PAD, status_y, WIN_W - PAD * 2, UIS(68),
             hwnd, (HMENU)ID_TXT_STATUS, NULL, NULL);
 
         EnumChildWindows(hwnd, set_child_font, (LPARAM)g_font_ui);
@@ -2375,16 +2430,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SelectObject(hdc, opDv); DeleteObject(pnDiv);
 
         /* 2) M logo */
-        draw_m_logo(hdc, 14, 5);
+        draw_m_logo(hdc, UIS(14), UIS(5));
 
         /* 3) 标题文字 "MemOpt 内存优化" */
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, TB_FG);
-        HFONT fTB = CreateFontW(-13, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+        HFONT fTB = CreateFontW(-UIS(13), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HGDIOBJ ofTB = SelectObject(hdc, fTB);
-        RECT rcTitle = { 44, 0, 200, TITLE_BAR_H };
+        RECT rcTitle = { UIS(44), 0, UIS(200), TITLE_BAR_H };
         DrawTextW(hdc, L"MemOpt \u5185\u5B58\u4F18\u5316", -1, &rcTitle,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(hdc, ofTB); DeleteObject(fTB);
@@ -2399,7 +2454,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
            ★ 底部必须与第一张卡片顶部(card_y=136)精确对齐：
            旧值为 150，白色区压住"物理内存"卡片顶部 14px，
            视觉上白色多出一截越过卡片（用户反馈）。 */
-        int hero_bottom = TITLE_BAR_H + 136;
+        int hero_bottom = TITLE_BAR_H + UIS(136);
         RECT rcHero = { 0, TITLE_BAR_H, rc.right, hero_bottom };
         HBRUSH brHero = CreateSolidBrush(RGB(255, 255, 255));
         FillRect(hdc, &rcHero, brHero);
@@ -2497,15 +2552,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HPEN   pnBd = CreatePen(PS_SOLID, 1, RGB(235, 236, 239));
             HGDIOBJ ob = SelectObject(di->hDC, brBg);
             HGDIOBJ op = SelectObject(di->hDC, pnBd);
-            RoundRect(di->hDC, rc->left, rc->top, rc->right, rc->bottom, 10, 10);
+            RoundRect(di->hDC, rc->left, rc->top, rc->right, rc->bottom, UIS(10), UIS(10));
             SelectObject(di->hDC, ob);
             SelectObject(di->hDC, op);
             DeleteObject(brBg);
             DeleteObject(pnBd);
 
             /* 绿点 3D 指示器（对准第一行中心 y = top + 24） */
-            int cxDot = rc->left + 22;
-            int cyDot = rc->top + 23;   /* 对准行1中心（行1: 12~34） */
+            int cxDot = rc->left + UIS(22);
+            int cyDot = rc->top + UIS(23);   /* 对准行1中心（行1: 12~34） */
             HBRUSH brHalo1 = CreateSolidBrush(RGB(215, 246, 228));
             HBRUSH brHalo2 = CreateSolidBrush(RGB(170, 230, 196));
             HBRUSH brHalo3 = CreateSolidBrush(ALERT_GREEN);
@@ -2514,21 +2569,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             {   /* 外圈 12px 淡 */
                 HGDIOBJ oh = SelectObject(di->hDC, brHalo1);
                 HGDIOBJ op2 = SelectObject(di->hDC, pnN);
-                Ellipse(di->hDC, cxDot - 6, cyDot - 6, cxDot + 6, cyDot + 6);
+                Ellipse(di->hDC, cxDot - UIS(6), cyDot - UIS(6), cxDot + UIS(6), cyDot + UIS(6));
                 SelectObject(di->hDC, op2);
                 SelectObject(di->hDC, oh);
             }
             {   /* 中圈 9px 中 */
                 HGDIOBJ oh = SelectObject(di->hDC, brHalo2);
                 HGDIOBJ op2 = SelectObject(di->hDC, pnN);
-                Ellipse(di->hDC, cxDot - 4, cyDot - 4, cxDot + 5, cyDot + 5);
+                Ellipse(di->hDC, cxDot - UIS(4), cyDot - UIS(4), cxDot + UIS(5), cyDot + UIS(5));
                 SelectObject(di->hDC, op2);
                 SelectObject(di->hDC, oh);
             }
             {   /* 核心 6px 实绿 */
                 HGDIOBJ oh = SelectObject(di->hDC, brHalo3);
                 HGDIOBJ op2 = SelectObject(di->hDC, pnN);
-                Ellipse(di->hDC, cxDot - 3, cyDot - 3, cxDot + 4, cyDot + 4);
+                Ellipse(di->hDC, cxDot - UIS(3), cyDot - UIS(3), cxDot + UIS(4), cyDot + UIS(4));
                 SelectObject(di->hDC, op2);
                 SelectObject(di->hDC, oh);
             }
@@ -2555,19 +2610,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!line1) line1 = L"";
 
             SetBkMode(di->hDC, TRANSPARENT);
-            int textX = cxDot + 16;
+            int textX = cxDot + UIS(16);
 
             /* 行1：略深、略主字体 g_font_ui，y = top + 14 → top+34 (高 20) */
             SelectObject(di->hDC, g_font_ui);
             SetTextColor(di->hDC, RGB(60, 66, 78));
-            RECT rcL1 = { textX, rc->top + 12, rc->right - 16, rc->top + 34 };
+            RECT rcL1 = { textX, rc->top + UIS(12), rc->right - UIS(16), rc->top + UIS(34) };
             DrawTextW(di->hDC, line1, -1, &rcL1,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
             /* 行2：上次清理信息 — 小一号字体，颜色更淡，缩进保持与 line1 对齐 */
             SelectObject(di->hDC, g_font_small);
             SetTextColor(di->hDC, RGB(124, 133, 148));
-            RECT rcL2 = { textX, rc->top + 38, rc->right - 16, rc->top + 60 };
+            RECT rcL2 = { textX, rc->top + UIS(38), rc->right - UIS(16), rc->top + UIS(60) };
             DrawTextW(di->hDC, line2, -1, &rcL2,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             return TRUE;
@@ -2590,7 +2645,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HGDIOBJ ob = SelectObject(di->hDC, br);
             HGDIOBJ op = SelectObject(di->hDC, pn);
             RoundRect(di->hDC, di->rcItem.left, di->rcItem.top,
-                      di->rcItem.right, di->rcItem.bottom, 8, 8);
+                      di->rcItem.right, di->rcItem.bottom, UIS(8), UIS(8));
             SelectObject(di->hDC, ob);
             SelectObject(di->hDC, op);
             DeleteObject(br);
@@ -2619,7 +2674,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_TIMER:
         if (wp == ID_TIMER_TRAY) {
-            gui_update_tray();
+            gui_update_tray(FALSE);
             gui_refresh_status();
         } else if (wp == ID_TIMER_AUTO) {
             if (g_auto_enabled && is_elevated())
@@ -2646,7 +2701,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                      g_last_clean_tag, freed / (1024.0 * 1024.0));
             log_msg(L"%ls", buf);
         }
-        gui_update_tray();
+        gui_update_tray(TRUE);  /* 清理完成，强制刷新一次托盘百分比 */
         gui_refresh_status();
         return 0;
     }
@@ -2725,7 +2780,7 @@ static void run_gui(void) {
        让卡片/按钮/状态条比例更舒展（480 时按钮行右缘收不齐） */
     g_hwnd = CreateWindowExW(0, L"MemOptClass", L"MemOpt",
         WS_POPUP | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 500, 620,
+        CW_USEDEFAULT, CW_USEDEFAULT, UIS(500), UIS(620),
         NULL, NULL, GetModuleHandleW(NULL), NULL);
     /* 强制使用图标资源（覆盖系统默认） */
     SendMessageW(g_hwnd, WM_SETICON, ICON_BIG,
@@ -2759,7 +2814,7 @@ static void run_gui(void) {
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     ShowWindow(g_hwnd, SW_HIDE);
-    gui_update_tray();
+    gui_update_tray(TRUE);  /* 启动首刷托盘图标 */
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
@@ -2805,6 +2860,7 @@ static void setup_dpi_awareness(void) {
 
 int wmain(int argc, wchar_t **argv) {
     setup_dpi_awareness();   /* 创建窗口前启用 DPI 感知 */
+    init_ui_dpi();           /* 按屏幕 DPI 计算 UI 缩放系数 */
 
     /* 单实例互斥：防止双开后两个实例的清理线程并发调用内核内存 API
        （并发清理正是 0xF7 蓝屏风险来源之一）。已有实例时：
